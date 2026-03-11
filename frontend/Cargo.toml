@@ -1,0 +1,41 @@
+[package]
+name = "stock-frontend"
+version = "0.1.0"
+edition = "2021"
+description = "Stock platform frontend – Dioxus WASM UI"
+
+[dependencies]
+# Dioxus UI Framework - Web
+dioxus = { version = "0.6", features = ["web"] }
+
+# Async trait（令 Repository trait 支持 async fn + Box<dyn Trait>）
+async-trait = "0.1"
+
+# WASM-native HTTP client（通过 backend gateway 通信）
+gloo-net = { version = "0.6", features = ["http"] }
+
+# Data serialization
+serde      = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde", "wasmbind"] }
+
+# Random data generation（Mock 模式）
+rand = "0.8"
+
+# Error handling
+thiserror = "1.0"
+anyhow    = "1.0"
+
+# Web-compatible async timer
+gloo-timers   = { version = "0.3", features = ["futures"] }
+
+# Concurrent futures（全球指数并发拉取）
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+
+# LocalStorage persistence (tokens, config)
+gloo-storage  = "0.3"
+
+# Required for rand in WASM
+getrandom = { version = "0.2", features = ["js"] }

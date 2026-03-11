@@ -1,0 +1,28 @@
+[package]
+name = "stock-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "Stock platform API gateway – Axum HTTP server (WebSocket-ready)"
+
+[[bin]]
+name = "stock-gateway"
+path = "src/main.rs"
+
+[dependencies]
+stock-storage       = { path = "../storage" }
+stock-data-provider = { path = "../data-provider" }
+
+# Web framework
+axum       = { version = "0.7", features = ["json", "ws"] }
+tokio      = { version = "1",   features = ["full"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Serialization
+serde      = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+anyhow             = "1.0"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

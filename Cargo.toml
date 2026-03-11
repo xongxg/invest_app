@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "frontend",
+    "backend/gateway",
+    "backend/storage",
+    "backend/data-provider",
+]
+resolver = "2"
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
