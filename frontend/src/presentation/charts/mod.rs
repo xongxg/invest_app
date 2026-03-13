@@ -4,7 +4,8 @@ use crate::domain::services::ChartDomainService;
 use crate::presentation::view_models::KlinePeriod;
 
 /// 将 ECharts option JSON 包装为自包含 HTML（通过 iframe srcdoc 嵌入）
-fn make_chart_html(option_json: &str) -> String {
+/// extra_js 会在 setOption 之前插入，用于注入无法 JSON 序列化的 JS 函数（如 formatter）
+fn make_chart_html(option_json: &str, extra_js: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -22,7 +23,9 @@ fn make_chart_html(option_json: &str) -> String {
   <div id="chart"></div>
   <script>
     var chart = echarts.init(document.getElementById('chart'));
-    chart.setOption({option_json});
+    var option = {option_json};
+    {extra_js}
+    chart.setOption(option);
     window.addEventListener('resize', function() {{ chart.resize(); }});
   </script>
 </body>
@@ -94,7 +97,10 @@ pub fn render_candlestick(symbol: &str, data: &[OHLCData], period: KlinePeriod) 
 
     let option = json!({
         "title":   { "text": title, "left": "center" },
-        "tooltip": { "trigger": "axis", "axisPointer": { "type": "cross" } },
+        "tooltip": {
+            "trigger": "axis",
+            "axisPointer": { "type": "cross" }
+        },
         "legend":  { "data": [period.label(), "成交量"], "top": "30" },
         "grid": [
             { "left": "10%", "right": "10%", "height": "50%" },
@@ -128,7 +134,18 @@ pub fn render_candlestick(symbol: &str, data: &[OHLCData], period: KlinePeriod) 
         ]
     });
 
-    make_chart_html(&option.to_string())
+    let extra_js = r#"option.tooltip.formatter = function(params) {
+        var p = params[0];
+        if (!p) return '';
+        var d = Array.isArray(p.data) ? p.data : [];
+        return p.name
+            + '<br/>开盘: ' + d[0]
+            + '<br/>收盘: ' + d[1]
+            + '<br/>最低: ' + d[2]
+            + '<br/>最高: ' + d[3];
+    };"#;
+
+    make_chart_html(&option.to_string(), extra_js)
 }
 
 /// 生成趋势折线图（含 MA5/MA10/MA20）
@@ -164,7 +181,7 @@ pub fn render_line(symbol: &str, data: &[OHLCData], period: KlinePeriod) -> Stri
         ]
     });
 
-    make_chart_html(&option.to_string())
+    make_chart_html(&option.to_string(), "")
 }
 
 /// 生成成交量柱状图
@@ -190,5 +207,5 @@ pub fn render_volume(symbol: &str, data: &[OHLCData], period: KlinePeriod) -> St
         ]
     });
 
-    make_chart_html(&option.to_string())
+    make_chart_html(&option.to_string(), "")
 }
