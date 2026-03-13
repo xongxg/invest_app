@@ -1,9 +1,12 @@
 [workspace]
 members = [
     "frontend",
-    "backend/gateway",
+    "backend/domain",
+    "backend/application",
     "backend/storage",
-    "backend/data-provider",
+    "backend/provider-tushare",
+    "backend/provider-yahoo",
+    "backend/gateway",
 ]
 resolver = "2"
 

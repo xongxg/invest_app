@@ -29,11 +29,11 @@ impl MockStockRepository {
 #[async_trait(?Send)]
 impl StockRepository for MockStockRepository {
     async fn get_all_stocks(&self) -> Result<Vec<Stock>, DomainError> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let stocks = self.symbols.iter().map(|sym| {
             let mut s = Self::make_stock(sym);
             // 每次刷新加入随机波动
-            let delta: f64 = rng.gen_range(-2.0..2.0);
+            let delta: f64 = rng.random_range(-2.0..2.0);
             s.price          += delta;
             s.change         += delta;
             s.change_percent  = (s.change / (s.price - s.change)) * 100.0;
@@ -52,17 +52,17 @@ impl StockRepository for MockStockRepository {
             "TSLA"  => 242.0, "AMZN"  => 151.0, _      => 100.0,
         };
 
-        let mut rng     = rand::thread_rng();
+        let mut rng     = rand::rng();
         let mut current = base;
         let mut data    = Vec::with_capacity(days);
 
         for i in 0..days {
             let date:  String = format!("2024-{:02}-{:02}", (i / 30) % 12 + 1, i % 30 + 1);
-            let open:  f64    = current + rng.gen_range(-2.0..2.0);
-            let close: f64    = open    + rng.gen_range(-5.0..5.0);
-            let high:  f64    = open.max(close) + rng.gen_range(0.0..3.0);
-            let low:   f64    = open.min(close) - rng.gen_range(0.0..3.0);
-            let volume: u64   = rng.gen_range(10_000_000..100_000_000);
+            let open:  f64    = current + rng.random_range(-2.0..2.0);
+            let close: f64    = open    + rng.random_range(-5.0..5.0);
+            let high:  f64    = open.max(close) + rng.random_range(0.0..3.0);
+            let low:   f64    = open.min(close) - rng.random_range(0.0..3.0);
+            let volume: u64   = rng.random_range(10_000_000..100_000_000);
             data.push(OHLCData { date, open, high, low, close, volume });
             current = close;
         }

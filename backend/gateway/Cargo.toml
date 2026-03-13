@@ -9,8 +9,11 @@ name = "stock-gateway"
 path = "src/main.rs"
 
 [dependencies]
-stock-storage       = { path = "../storage" }
-stock-data-provider = { path = "../data-provider" }
+stock-domain      = { path = "../domain" }
+stock-application = { path = "../application" }
+stock-storage     = { path = "../storage" }
+provider-tushare  = { path = "../provider-tushare" }
+provider-yahoo    = { path = "../provider-yahoo" }
 
 # Web framework
 axum       = { version = "0.7", features = ["json", "ws"] }
@@ -20,6 +23,11 @@ tower-http = { version = "0.5", features = ["cors", "trace"] }
 # Serialization
 serde      = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# Encrypted key store
+aes-gcm = "0.10"
+rand    = "0.8"
+base64  = "0.22"
 
 # Utilities
 reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

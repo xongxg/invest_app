@@ -1,10 +1,20 @@
-//! Yahoo Finance API 客户端（服务端，使用 reqwest）
+//! Yahoo Finance API 数据提供层（美股、港股、ETF）
+//!
+//! 基础设施层：实现领域端口 [`StockRepository`]。
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 
-use stock_storage::{OHLCDto, StockDto};
+use stock_domain::{DomainError, OHLCBar, Stock, StockRepository};
+use stock_storage::ArrowStore;
+
+const STOCK_TTL:   Duration = Duration::from_secs(60 * 5);
+const HISTORY_TTL: Duration = Duration::from_secs(60 * 60 * 24);
 
 // ── Yahoo Finance JSON 结构 ──────────────────────────────────────────────────
 
@@ -80,7 +90,7 @@ fn ts_to_date(ts: i64) -> String {
 
 fn build_request(client: &Client, url: &str, api_key: &str) -> reqwest::RequestBuilder {
     let req = client.get(url);
-    if api_key.is_empty() { req } else { req.header("Authorization", format!("Bearer {}", api_key)) }
+    if api_key.is_empty() { req } else { req.header("Authorization", format!("Bearer {api_key}")) }
 }
 
 async fn fetch_chart(
@@ -106,19 +116,20 @@ async fn fetch_chart(
         .ok_or_else(|| anyhow!("no result for {symbol}"))
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── 公开接口函数 ──────────────────────────────────────────────────────────────
 
+/// 获取多只股票的最新行情
 pub async fn fetch_stocks(
     client: &Client,
     symbols: &[String],
     api_key: &str,
-) -> Result<Vec<StockDto>> {
+) -> Result<Vec<Stock>> {
     let mut out = Vec::new();
     for symbol in symbols {
         let yahoo_sym = to_yahoo_symbol(symbol);
         let result = match fetch_chart(client, yahoo_sym, "1d", "5d", api_key).await {
             Ok(r)  => r,
-            Err(e) => { eprintln!("[yahoo] skip {symbol} ({yahoo_sym}): {e}"); continue; }
+            Err(e) => { tracing::warn!("[yahoo] skip {symbol} ({yahoo_sym}): {e}"); continue; }
         };
         let meta       = result.meta;
         let price      = meta.regular_market_price;
@@ -126,8 +137,8 @@ pub async fn fetch_stocks(
         let change     = price - prev_close;
         let change_pct = if prev_close != 0.0 { (change / prev_close) * 100.0 } else { 0.0 };
 
-        out.push(StockDto {
-            symbol:         symbol.clone(),  // 保留展示代码，不用 Yahoo 内部符号
+        out.push(Stock {
+            symbol:         symbol.clone(),
             name:           meta.long_name.unwrap_or_else(|| symbol.clone()),
             price,
             change,
@@ -139,12 +150,13 @@ pub async fn fetch_stocks(
     Ok(out)
 }
 
+/// 获取历史 K 线
 pub async fn fetch_history(
     client: &Client,
     symbol: &str,
     days: usize,
     api_key: &str,
-) -> Result<Vec<OHLCDto>> {
+) -> Result<Vec<OHLCBar>> {
     let range  = if days <= 30 { "1mo" } else if days <= 90 { "3mo" } else { "6mo" };
     let result = fetch_chart(client, symbol, "1d", range, api_key).await?;
 
@@ -158,6 +170,61 @@ pub async fn fetch_history(
         let low    = quotes.low   .get(i).copied().flatten()?;
         let close  = quotes.close .get(i).copied().flatten()?;
         let volume = quotes.volume.get(i).copied().flatten().unwrap_or(0);
-        Some(OHLCDto { date: ts_to_date(ts), open, high, low, close, volume })
+        Some(OHLCBar { date: ts_to_date(ts), open, high, low, close, volume })
     }).take(days).collect())
+}
+
+// ── 基础设施层：仓储实现 ──────────────────────────────────────────────────────
+
+/// 美股/港股仓储（Yahoo Finance）：缓存优先 + API 回源
+pub struct YahooStockRepository {
+    store:   Arc<ArrowStore>,
+    client:  Client,
+    api_key: String,
+}
+
+impl YahooStockRepository {
+    pub fn new(store: Arc<ArrowStore>, client: Client, api_key: String) -> Self {
+        Self { store, client, api_key }
+    }
+}
+
+#[async_trait]
+impl StockRepository for YahooStockRepository {
+    async fn get_quotes(&self, symbols: &[String]) -> Result<Vec<Stock>, DomainError> {
+        let cache_key = format!("stocks:yahoo:{}", symbols.join(","));
+
+        if let Some(data) = self.store.get_stocks(&cache_key, STOCK_TTL) {
+            return Ok(data);
+        }
+
+        match fetch_stocks(&self.client, symbols, &self.api_key).await {
+            Ok(stocks) => {
+                let _ = self.store.put_stocks(&cache_key, &stocks);
+                Ok(stocks)
+            }
+            Err(e) => {
+                if let Some(stale) = self.store.get_stocks_stale(&cache_key) {
+                    tracing::warn!("yahoo stocks api error, using stale cache: {e}");
+                    Ok(stale)
+                } else {
+                    Err(DomainError::External(e.to_string()))
+                }
+            }
+        }
+    }
+
+    async fn get_ohlc(&self, symbol: &str, days: usize) -> Result<Vec<OHLCBar>, DomainError> {
+        let cache_key = format!("ohlc:yahoo:{}:{}", symbol, days);
+
+        if let Some(data) = self.store.get_ohlc(&cache_key, HISTORY_TTL) {
+            return Ok(data);
+        }
+
+        let ohlc = fetch_history(&self.client, symbol, days, &self.api_key)
+            .await
+            .map_err(|e| DomainError::External(e.to_string()))?;
+        let _ = self.store.put_ohlc(&cache_key, &ohlc);
+        Ok(ohlc)
+    }
 }

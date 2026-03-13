@@ -6,7 +6,7 @@ description = "Stock platform frontend – Dioxus WASM UI"
 
 [dependencies]
 # Dioxus UI Framework - Web
-dioxus = { version = "0.6", features = ["web"] }
+dioxus = { version = "0.7", features = ["web"] }
 
 # Async trait（令 Repository trait 支持 async fn + Box<dyn Trait>）
 async-trait = "0.1"
@@ -22,7 +22,7 @@ serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde", "wasmbind"] }
 
 # Random data generation（Mock 模式）
-rand = "0.8"
+rand = "0.9"
 
 # Error handling
 thiserror = "1.0"
@@ -37,5 +37,8 @@ futures = { version = "0.3", default-features = false, features = ["alloc"] }
 # LocalStorage persistence (tokens, config)
 gloo-storage  = "0.3"
 
-# Required for rand in WASM
-getrandom = { version = "0.2", features = ["js"] }
+# Required for rand in WASM（getrandom 0.3 renamed the feature from "js" to "wasm_js"）
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+# JS interop（for js_sys::Date in data_sync.rs）
+js-sys = "0.3"

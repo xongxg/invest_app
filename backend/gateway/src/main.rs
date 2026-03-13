@@ -1,13 +1,17 @@
+mod key_store;
 mod routes;
+mod server_config;
 mod state;
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::Router;
 use stock_storage::ArrowStore;
 use tower_http::cors::{Any, CorsLayer};
 
+use key_store::KeyStore;
+use server_config::ServerConfig;
 use state::AppState;
 
 #[tokio::main]
@@ -19,21 +23,31 @@ async fn main() {
         )
         .init();
 
-    let base_dir = PathBuf::from(
-        std::env::var("STOCK_DATA_DIR").unwrap_or_else(|_| "data".into())
-    );
+    // ── 配置优先级：stock_config.json > 环境变量 > 默认值 "data" ─────────────
+    let cfg = server_config::load();
+    tracing::info!("data_dir = {:?}  (config: {:?})", cfg.data_dir, server_config::config_path());
+
+    let base_dir = PathBuf::from(&cfg.data_dir);
 
     let ashare_store = ArrowStore::new(base_dir.join("a_stock")).expect("ArrowStore a_stock init");
     let us_store     = ArrowStore::new(base_dir.join("us_stock")).expect("ArrowStore us_stock init");
+    let etf_store    = ArrowStore::new(base_dir.join("a").join("etf")).expect("ArrowStore etf init");
     tracing::info!(
-        "ArrowStore ready: a_stock={} keys, us_stock={} keys",
+        "ArrowStore ready: a_stock={} keys, us_stock={} keys, etf={} keys",
         ashare_store.cached_key_count(),
         us_store.cached_key_count(),
+        etf_store.cached_key_count(),
     );
+
+    let keys = KeyStore::open(&base_dir).expect("KeyStore init");
+    tracing::info!("KeyStore ready: {} stored keys", keys.list().len());
 
     let state = Arc::new(AppState {
         ashare_store: Arc::new(ashare_store),
         store:        Arc::new(us_store),
+        etf_store:    Arc::new(etf_store),
+        keys:         Arc::new(keys),
+        config:       Arc::new(RwLock::new(cfg)),
         client:       reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()

@@ -1,29 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-/// 股票行情 DTO（与前端 domain::Stock 的 JSON 字段完全对齐）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StockDto {
-    pub symbol:         String,
-    pub name:           String,
-    pub price:          f64,
-    pub change:         f64,
-    pub change_percent: f64,
-    pub volume:         u64,
-    pub market_cap:     Option<String>,
-}
-
-/// OHLCV K 线 DTO（与前端 domain::OHLCData 字段对齐）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OHLCDto {
-    pub date:   String,
-    pub open:   f64,
-    pub high:   f64,
-    pub low:    f64,
-    pub close:  f64,
-    pub volume: u64,
-}
-
-/// `/api/health` 响应
+/// `/api/health` 响应（基础设施层 DTO，不属于领域）
 #[derive(Serialize)]
 pub struct HealthDto {
     pub status:      &'static str,

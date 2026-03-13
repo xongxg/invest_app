@@ -1,0 +1,12 @@
+[package]
+name        = "stock-application"
+version     = "0.1.0"
+edition     = "2021"
+description = "Stock platform application layer – use cases and application services"
+
+[lib]
+name = "stock_application"
+path = "src/lib.rs"
+
+[dependencies]
+stock-domain = { path = "../domain" }

@@ -1,0 +1,20 @@
+[package]
+name        = "provider-yahoo"
+version     = "0.1.0"
+edition     = "2021"
+description = "Yahoo Finance API 数据提供层（美股、港股、ETF）"
+
+[lib]
+name = "provider_yahoo"
+path = "src/lib.rs"
+
+[dependencies]
+stock-domain  = { path = "../domain" }
+stock-storage = { path = "../storage" }
+
+reqwest     = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde       = { version = "1.0", features = ["derive"] }
+serde_json  = "1.0"
+anyhow      = "1.0"
+tracing     = "0.1"
+async-trait = "0.1"

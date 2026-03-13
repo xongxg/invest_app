@@ -33,8 +33,9 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::reader::FileReader;
 use arrow::ipc::writer::FileWriter;
 use arrow::record_batch::RecordBatch;
+use serde::{de::DeserializeOwned, Serialize};
 
-use crate::types::{OHLCDto, StockDto};
+use stock_domain::{FundNav, OHLCBar, Stock};
 
 // ── Schema 定义 ───────────────────────────────────────────────────────────────
 
@@ -61,6 +62,22 @@ fn ohlc_schema() -> Arc<Schema> {
     ]))
 }
 
+/// 通用 JSON-row schema：每行存一条记录的 JSON 字符串，用于扩展类型
+fn json_row_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("json", DataType::Utf8, false),
+    ]))
+}
+
+fn fund_nav_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("nav_date",  DataType::Utf8,    false),
+        Field::new("unit_nav",  DataType::Float64, false),
+        Field::new("accum_nav", DataType::Float64, false),
+        Field::new("adj_nav",   DataType::Float64, false),
+    ]))
+}
+
 const META_KEY: &str = "cache_key";
 
 // ── 内存 Entry ────────────────────────────────────────────────────────────────
@@ -79,9 +96,12 @@ impl Entry {
 // ── ArrowStore ────────────────────────────────────────────────────────────────
 
 pub struct ArrowStore {
-    data_dir: PathBuf,
-    stocks:   RwLock<HashMap<String, Entry>>,
-    ohlc:     RwLock<HashMap<String, Entry>>,
+    data_dir:  PathBuf,
+    stocks:    RwLock<HashMap<String, Entry>>,
+    ohlc:      RwLock<HashMap<String, Entry>>,
+    fund_nav:  RwLock<HashMap<String, Entry>>,
+    /// 通用 JSON-row 缓存（ETF 基本信息、日线详情、持仓、申赎、分红、指数）
+    extra:     RwLock<HashMap<String, Entry>>,
 }
 
 impl ArrowStore {
@@ -90,8 +110,10 @@ impl ArrowStore {
         fs::create_dir_all(&data_dir)?;
         let store = Self {
             data_dir,
-            stocks: RwLock::new(HashMap::new()),
-            ohlc:   RwLock::new(HashMap::new()),
+            stocks:   RwLock::new(HashMap::new()),
+            ohlc:     RwLock::new(HashMap::new()),
+            fund_nav: RwLock::new(HashMap::new()),
+            extra:    RwLock::new(HashMap::new()),
         };
         store.load_all_from_disk();
         Ok(store)
@@ -99,13 +121,52 @@ impl ArrowStore {
 
     /// 已缓存的键数（内存层）
     pub fn cached_key_count(&self) -> usize {
-        self.stocks.read().unwrap().len() + self.ohlc.read().unwrap().len()
+        self.stocks.read().unwrap().len()
+            + self.ohlc.read().unwrap().len()
+            + self.fund_nav.read().unwrap().len()
+            + self.extra.read().unwrap().len()
+    }
+
+    // ── Extra（通用 JSON-row）────────────────────────────────────────────────
+
+    /// 写入任意可序列化的 Vec<T>（每条记录存为 JSON 字符串）
+    pub fn put_extra<T: Serialize>(&self, key: &str, data: &[T]) -> anyhow::Result<()> {
+        let batch = rows_to_json_batch(data, key)?;
+        let path  = self.extra_path(key);
+        write_ipc(&path, &batch)?;
+        self.extra.write().unwrap().insert(key.to_string(), Entry {
+            batch,
+            written_at: SystemTime::now(),
+        });
+        tracing::debug!("put_extra key={key} rows={} path={}", data.len(), path.display());
+        Ok(())
+    }
+
+    /// 读取 Vec<T>（内存优先 → 磁盘 → None）
+    pub fn get_extra<T: DeserializeOwned>(&self, key: &str, ttl: Duration) -> Option<Vec<T>> {
+        {
+            let cache = self.extra.read().unwrap();
+            if let Some(e) = cache.get(key) {
+                if e.is_fresh(ttl) {
+                    tracing::debug!("get_extra mem-hit key={key}");
+                    return json_batch_to_rows(&e.batch);
+                }
+            }
+        }
+        let path = self.extra_path(key);
+        if let Some((batch, written_at)) = load_ipc_if_fresh(&path, ttl) {
+            tracing::debug!("get_extra disk-hit key={key}");
+            let data = json_batch_to_rows(&batch)?;
+            self.extra.write().unwrap().insert(key.to_string(), Entry { batch, written_at });
+            return Some(data);
+        }
+        None
     }
 
     // ── Stocks ────────────────────────────────────────────────────────────────
 
     /// 写入股票行情：同时更新内存缓存和磁盘 `.arrow` 文件。
-    pub fn put_stocks(&self, key: &str, stocks: &[StockDto]) -> anyhow::Result<()> {
+    pub fn put_stocks(&self, key: &str, stocks: &[Stock]) -> anyhow::Result<()> {
         let batch = stocks_to_batch(stocks, key)?;
         let path  = self.stocks_path(key);
         write_ipc(&path, &batch)?;
@@ -118,7 +179,7 @@ impl ArrowStore {
     }
 
     /// 读取股票行情（内存优先 → 磁盘 → None）。
-    pub fn get_stocks(&self, key: &str, ttl: Duration) -> Option<Vec<StockDto>> {
+    pub fn get_stocks(&self, key: &str, ttl: Duration) -> Option<Vec<Stock>> {
         {
             let cache = self.stocks.read().unwrap();
             if let Some(e) = cache.get(key) {
@@ -139,7 +200,7 @@ impl ArrowStore {
     }
 
     /// 读取股票行情（忽略 TTL，有数据就返回——用于 API 失败时的旧数据兜底）
-    pub fn get_stocks_stale(&self, key: &str) -> Option<Vec<StockDto>> {
+    pub fn get_stocks_stale(&self, key: &str) -> Option<Vec<Stock>> {
         if let Some(e) = self.stocks.read().unwrap().get(key) {
             return Some(batch_to_stocks(&e.batch));
         }
@@ -152,7 +213,7 @@ impl ArrowStore {
 
     // ── OHLC ─────────────────────────────────────────────────────────────────
 
-    pub fn put_ohlc(&self, key: &str, data: &[OHLCDto]) -> anyhow::Result<()> {
+    pub fn put_ohlc(&self, key: &str, data: &[OHLCBar]) -> anyhow::Result<()> {
         let batch = ohlc_to_batch(data, key)?;
         let path  = self.ohlc_path(key);
         write_ipc(&path, &batch)?;
@@ -164,7 +225,7 @@ impl ArrowStore {
         Ok(())
     }
 
-    pub fn get_ohlc(&self, key: &str, ttl: Duration) -> Option<Vec<OHLCDto>> {
+    pub fn get_ohlc(&self, key: &str, ttl: Duration) -> Option<Vec<OHLCBar>> {
         {
             let cache = self.ohlc.read().unwrap();
             if let Some(e) = cache.get(key) {
@@ -179,6 +240,40 @@ impl ArrowStore {
             tracing::debug!("get_ohlc disk-hit key={key}");
             let data = batch_to_ohlc(&batch);
             self.ohlc.write().unwrap().insert(key.to_string(), Entry { batch, written_at });
+            return Some(data);
+        }
+        None
+    }
+
+    // ── FundNav ───────────────────────────────────────────────────────────────
+
+    pub fn put_fund_nav(&self, key: &str, data: &[FundNav]) -> anyhow::Result<()> {
+        let batch = fund_nav_to_batch(data, key)?;
+        let path  = self.fund_nav_path(key);
+        write_ipc(&path, &batch)?;
+        self.fund_nav.write().unwrap().insert(key.to_string(), Entry {
+            batch,
+            written_at: SystemTime::now(),
+        });
+        tracing::debug!("put_fund_nav key={key} rows={} path={}", data.len(), path.display());
+        Ok(())
+    }
+
+    pub fn get_fund_nav(&self, key: &str, ttl: Duration) -> Option<Vec<FundNav>> {
+        {
+            let cache = self.fund_nav.read().unwrap();
+            if let Some(e) = cache.get(key) {
+                if e.is_fresh(ttl) {
+                    tracing::debug!("get_fund_nav mem-hit key={key}");
+                    return Some(batch_to_fund_nav(&e.batch));
+                }
+            }
+        }
+        let path = self.fund_nav_path(key);
+        if let Some((batch, written_at)) = load_ipc_if_fresh(&path, ttl) {
+            tracing::debug!("get_fund_nav disk-hit key={key}");
+            let data = batch_to_fund_nav(&batch);
+            self.fund_nav.write().unwrap().insert(key.to_string(), Entry { batch, written_at });
             return Some(data);
         }
         None
@@ -212,6 +307,14 @@ impl ArrowStore {
                         self.ohlc.write().unwrap()
                             .insert(key.clone(), Entry { batch, written_at });
                         tracing::info!("loaded ohlc key={key} from disk");
+                    } else if stem.starts_with("nav_") {
+                        self.fund_nav.write().unwrap()
+                            .insert(key.clone(), Entry { batch, written_at });
+                        tracing::info!("loaded fund_nav key={key} from disk");
+                    } else if stem.starts_with("xc_") {
+                        self.extra.write().unwrap()
+                            .insert(key.clone(), Entry { batch, written_at });
+                        tracing::info!("loaded extra key={key} from disk");
                     }
                 }
                 Err(e) => tracing::warn!("skip {}: {e}", path.display()),
@@ -229,6 +332,19 @@ impl ArrowStore {
     fn ohlc_path(&self, key: &str) -> PathBuf {
         let symbol = key.splitn(4, ':').nth(2).unwrap_or(key);
         self.data_dir.join(format!("stock_{symbol}.arrow"))
+    }
+
+    /// 基金净值文件：`nav_{ts_code}.arrow`
+    /// key 格式：`nav:{ts_code}:{days}`
+    fn fund_nav_path(&self, key: &str) -> PathBuf {
+        let ts_code = key.splitn(3, ':').nth(1).unwrap_or(key);
+        self.data_dir.join(format!("nav_{ts_code}.arrow"))
+    }
+
+    /// 通用 JSON-row 文件：`xc_{safe_key}.arrow`
+    fn extra_path(&self, key: &str) -> PathBuf {
+        let safe = key.replace([':', '/'], "_");
+        self.data_dir.join(format!("xc_{safe}.arrow"))
     }
 }
 
@@ -260,9 +376,9 @@ fn load_ipc_raw(path: &Path) -> anyhow::Result<(RecordBatch, SystemTime)> {
     Ok((batch, written_at))
 }
 
-// ── 序列化：Vec<Dto> → RecordBatch ───────────────────────────────────────────
+// ── 序列化：Vec<Entity> → RecordBatch ────────────────────────────────────────
 
-fn stocks_to_batch(stocks: &[StockDto], key: &str) -> anyhow::Result<RecordBatch> {
+fn stocks_to_batch(stocks: &[Stock], key: &str) -> anyhow::Result<RecordBatch> {
     let mut meta = HashMap::new();
     meta.insert(META_KEY.to_string(), key.to_string());
     let schema = Arc::new(stock_schema().as_ref().clone().with_metadata(meta));
@@ -279,7 +395,7 @@ fn stocks_to_batch(stocks: &[StockDto], key: &str) -> anyhow::Result<RecordBatch
     Ok(RecordBatch::try_new(schema, cols)?)
 }
 
-fn ohlc_to_batch(data: &[OHLCDto], key: &str) -> anyhow::Result<RecordBatch> {
+fn ohlc_to_batch(data: &[OHLCBar], key: &str) -> anyhow::Result<RecordBatch> {
     let mut meta = HashMap::new();
     meta.insert(META_KEY.to_string(), key.to_string());
     let schema = Arc::new(ohlc_schema().as_ref().clone().with_metadata(meta));
@@ -295,9 +411,47 @@ fn ohlc_to_batch(data: &[OHLCDto], key: &str) -> anyhow::Result<RecordBatch> {
     Ok(RecordBatch::try_new(schema, cols)?)
 }
 
-// ── 反序列化：RecordBatch → Vec<Dto> ─────────────────────────────────────────
+// ── 通用 JSON-row 序列化/反序列化 ─────────────────────────────────────────────
 
-fn batch_to_stocks(batch: &RecordBatch) -> Vec<StockDto> {
+fn rows_to_json_batch<T: Serialize>(data: &[T], key: &str) -> anyhow::Result<RecordBatch> {
+    let mut meta = HashMap::new();
+    meta.insert(META_KEY.to_string(), key.to_string());
+    let schema = Arc::new(json_row_schema().as_ref().clone().with_metadata(meta));
+
+    let json_strs: Vec<String> = data.iter()
+        .map(|item| serde_json::to_string(item).unwrap_or_default())
+        .collect();
+    let cols: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(json_strs.iter().map(|s| s.as_str()).collect::<Vec<_>>())),
+    ];
+    Ok(RecordBatch::try_new(schema, cols)?)
+}
+
+fn json_batch_to_rows<T: DeserializeOwned>(batch: &RecordBatch) -> Option<Vec<T>> {
+    let arr = batch.column(0).as_any().downcast_ref::<StringArray>()?;
+    let rows = arr.iter()
+        .filter_map(|v| v.and_then(|s| serde_json::from_str(s).ok()))
+        .collect();
+    Some(rows)
+}
+
+fn fund_nav_to_batch(data: &[FundNav], key: &str) -> anyhow::Result<RecordBatch> {
+    let mut meta = HashMap::new();
+    meta.insert(META_KEY.to_string(), key.to_string());
+    let schema = Arc::new(fund_nav_schema().as_ref().clone().with_metadata(meta));
+
+    let cols: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(data.iter().map(|d| d.nav_date.as_str()).collect::<Vec<_>>())),
+        Arc::new(Float64Array::from(data.iter().map(|d| d.unit_nav ).collect::<Vec<_>>())),
+        Arc::new(Float64Array::from(data.iter().map(|d| d.accum_nav).collect::<Vec<_>>())),
+        Arc::new(Float64Array::from(data.iter().map(|d| d.adj_nav  ).collect::<Vec<_>>())),
+    ];
+    Ok(RecordBatch::try_new(schema, cols)?)
+}
+
+// ── 反序列化：RecordBatch → Vec<Entity> ──────────────────────────────────────
+
+fn batch_to_stocks(batch: &RecordBatch) -> Vec<Stock> {
     let symbols     = col_str(batch, 0);
     let names       = col_str(batch, 1);
     let prices      = col_f64(batch, 2);
@@ -306,7 +460,7 @@ fn batch_to_stocks(batch: &RecordBatch) -> Vec<StockDto> {
     let volumes     = col_u64(batch, 5);
     let caps        = col_str_opt(batch, 6);
 
-    (0..batch.num_rows()).map(|i| StockDto {
+    (0..batch.num_rows()).map(|i| Stock {
         symbol:         symbols[i].clone(),
         name:           names[i].clone(),
         price:          prices[i],
@@ -317,7 +471,7 @@ fn batch_to_stocks(batch: &RecordBatch) -> Vec<StockDto> {
     }).collect()
 }
 
-fn batch_to_ohlc(batch: &RecordBatch) -> Vec<OHLCDto> {
+fn batch_to_ohlc(batch: &RecordBatch) -> Vec<OHLCBar> {
     let dates   = col_str(batch, 0);
     let opens   = col_f64(batch, 1);
     let highs   = col_f64(batch, 2);
@@ -325,13 +479,27 @@ fn batch_to_ohlc(batch: &RecordBatch) -> Vec<OHLCDto> {
     let closes  = col_f64(batch, 4);
     let volumes = col_u64(batch, 5);
 
-    (0..batch.num_rows()).map(|i| OHLCDto {
+    (0..batch.num_rows()).map(|i| OHLCBar {
         date:   dates[i].clone(),
         open:   opens[i],
         high:   highs[i],
         low:    lows[i],
         close:  closes[i],
         volume: volumes[i],
+    }).collect()
+}
+
+fn batch_to_fund_nav(batch: &RecordBatch) -> Vec<FundNav> {
+    let nav_dates  = col_str(batch, 0);
+    let unit_navs  = col_f64(batch, 1);
+    let accum_navs = col_f64(batch, 2);
+    let adj_navs   = col_f64(batch, 3);
+
+    (0..batch.num_rows()).map(|i| FundNav {
+        nav_date:  nav_dates[i].clone(),
+        unit_nav:  unit_navs[i],
+        accum_nav: accum_navs[i],
+        adj_nav:   adj_navs[i],
     }).collect()
 }
 

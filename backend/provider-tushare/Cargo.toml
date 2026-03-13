@@ -1,0 +1,21 @@
+[package]
+name        = "provider-tushare"
+version     = "0.1.0"
+edition     = "2021"
+description = "Tushare Pro API 数据提供层（A股、ETF、指数）"
+
+[lib]
+name = "provider_tushare"
+path = "src/lib.rs"
+
+[dependencies]
+stock-domain  = { path = "../domain" }
+stock-storage = { path = "../storage" }
+
+reqwest     = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde       = { version = "1.0", features = ["derive"] }
+serde_json  = "1.0"
+chrono      = { version = "0.4", features = ["serde"] }
+anyhow      = "1.0"
+tracing     = "0.1"
+async-trait = "0.1"

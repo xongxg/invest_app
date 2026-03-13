@@ -9,6 +9,8 @@ name = "stock_storage"
 path = "src/lib.rs"
 
 [dependencies]
+stock-domain = { path = "../domain" }
+
 # Apache Arrow – columnar persistent database (IPC file format)
 arrow = { version = "53", default-features = false, features = ["prettyprint", "ipc"] }
 

@@ -1,6 +1,7 @@
 use serde_json::json;
 use crate::domain::entities::OHLCData;
 use crate::domain::services::ChartDomainService;
+use crate::presentation::view_models::KlinePeriod;
 
 /// 将 ECharts option JSON 包装为自包含 HTML（通过 iframe srcdoc 嵌入）
 fn make_chart_html(option_json: &str) -> String {
@@ -29,16 +30,72 @@ fn make_chart_html(option_json: &str) -> String {
     )
 }
 
+// ── 周期聚合 ──────────────────────────────────────────────────────────────────
+
+/// 将日线数据按周期聚合为 OHLC bar 列表
+pub fn aggregate(data: &[OHLCData], period: KlinePeriod) -> Vec<OHLCData> {
+    if matches!(period, KlinePeriod::Daily) {
+        return data.to_vec();
+    }
+
+    // 按周期 key 分组（保持原始顺序，data 应按日期升序排列）
+    let mut groups: Vec<(String, Vec<&OHLCData>)> = Vec::new();
+
+    for bar in data {
+        let key = period_key(&bar.date, period);
+        if let Some(last) = groups.last_mut() {
+            if last.0 == key {
+                last.1.push(bar);
+                continue;
+            }
+        }
+        groups.push((key, vec![bar]));
+    }
+
+    groups
+        .into_iter()
+        .map(|(key, bars)| OHLCData {
+            date:   key,
+            open:   bars.first().unwrap().open,
+            close:  bars.last().unwrap().close,
+            high:   bars.iter().map(|b| b.high).fold(f64::NEG_INFINITY, f64::max),
+            low:    bars.iter().map(|b| b.low).fold(f64::INFINITY, f64::min),
+            volume: bars.iter().map(|b| b.volume).sum(),
+        })
+        .collect()
+}
+
+/// "YYYY-MM-DD" → 周期标签
+fn period_key(date: &str, period: KlinePeriod) -> String {
+    // date 格式固定为 YYYY-MM-DD，直接按字符切分
+    let year  = &date[..4];
+    let month: u32 = date[5..7].parse().unwrap_or(1);
+
+    match period {
+        KlinePeriod::Daily     => date.to_string(),
+        KlinePeriod::Monthly   => format!("{}-{:02}", year, month),
+        KlinePeriod::Quarterly => {
+            let q = (month - 1) / 3 + 1;
+            format!("{}-Q{}", year, q)
+        }
+        KlinePeriod::Yearly    => year.to_string(),
+    }
+}
+
+// ── 图表渲染 ──────────────────────────────────────────────────────────────────
+
 /// 生成 K 线图 + 成交量复合图
-pub fn render_candlestick(symbol: &str, data: &[OHLCData]) -> String {
-    let dates: Vec<&str>       = data.iter().map(|d| d.date.as_str()).collect();
-    let candles: Vec<[f64; 4]> = data.iter().map(|d| [d.open, d.close, d.low, d.high]).collect();
-    let volumes: Vec<f64>      = data.iter().map(|d| d.volume as f64).collect();
+pub fn render_candlestick(symbol: &str, data: &[OHLCData], period: KlinePeriod) -> String {
+    let data = aggregate(data, period);
+    let dates:   Vec<&str>    = data.iter().map(|d| d.date.as_str()).collect();
+    let candles: Vec<[f64;4]> = data.iter().map(|d| [d.open, d.close, d.low, d.high]).collect();
+    let volumes: Vec<f64>     = data.iter().map(|d| d.volume as f64).collect();
+    let title = format!("{} - {}线", symbol, period.label());
 
     let option = json!({
-        "title":   { "text": format!("{} - 日K线", symbol), "left": "center" },
+        "title":   { "text": title, "left": "center" },
         "tooltip": { "trigger": "axis", "axisPointer": { "type": "cross" } },
-        "legend":  { "data": ["日K", "成交量"], "top": "30" },
+        "legend":  { "data": [period.label(), "成交量"], "top": "30" },
         "grid": [
             { "left": "10%", "right": "10%", "height": "50%" },
             { "left": "10%", "right": "10%", "top": "70%", "height": "15%" }
@@ -57,7 +114,7 @@ pub fn render_candlestick(symbol: &str, data: &[OHLCData]) -> String {
         ],
         "series": [
             {
-                "name": "日K", "type": "candlestick", "data": candles,
+                "name": period.label(), "type": "candlestick", "data": candles,
                 "xAxisIndex": 0, "yAxisIndex": 0,
                 "itemStyle": {
                     "color": "#ef5350", "color0": "#26a69a",
@@ -75,15 +132,17 @@ pub fn render_candlestick(symbol: &str, data: &[OHLCData]) -> String {
 }
 
 /// 生成趋势折线图（含 MA5/MA10/MA20）
-pub fn render_line(symbol: &str, data: &[OHLCData]) -> String {
-    let dates:  Vec<&str>         = data.iter().map(|d| d.date.as_str()).collect();
-    let prices: Vec<f64>          = data.iter().map(|d| d.close).collect();
-    let ma5:    Vec<Option<f64>>  = ChartDomainService::calculate_ma(&prices, 5);
-    let ma10:   Vec<Option<f64>>  = ChartDomainService::calculate_ma(&prices, 10);
-    let ma20:   Vec<Option<f64>>  = ChartDomainService::calculate_ma(&prices, 20);
+pub fn render_line(symbol: &str, data: &[OHLCData], period: KlinePeriod) -> String {
+    let data   = aggregate(data, period);
+    let dates:  Vec<&str>        = data.iter().map(|d| d.date.as_str()).collect();
+    let prices: Vec<f64>         = data.iter().map(|d| d.close).collect();
+    let ma5:    Vec<Option<f64>> = ChartDomainService::calculate_ma(&prices, 5);
+    let ma10:   Vec<Option<f64>> = ChartDomainService::calculate_ma(&prices, 10);
+    let ma20:   Vec<Option<f64>> = ChartDomainService::calculate_ma(&prices, 20);
+    let title = format!("{} - {}价格趋势", symbol, period.label());
 
     let option = json!({
-        "title":   { "text": format!("{} - 价格趋势", symbol), "left": "center" },
+        "title":   { "text": title, "left": "center" },
         "tooltip": { "trigger": "axis", "axisPointer": { "type": "cross" } },
         "legend":  { "data": ["价格", "MA5", "MA10", "MA20"], "top": "30" },
         "grid":    { "left": "3%", "right": "4%", "bottom": "15%", "containLabel": true },
@@ -109,12 +168,14 @@ pub fn render_line(symbol: &str, data: &[OHLCData]) -> String {
 }
 
 /// 生成成交量柱状图
-pub fn render_volume(symbol: &str, data: &[OHLCData]) -> String {
+pub fn render_volume(symbol: &str, data: &[OHLCData], period: KlinePeriod) -> String {
+    let data   = aggregate(data, period);
     let dates:   Vec<&str> = data.iter().map(|d| d.date.as_str()).collect();
     let volumes: Vec<f64>  = data.iter().map(|d| d.volume as f64).collect();
+    let title = format!("{} - {}成交量", symbol, period.label());
 
     let option = json!({
-        "title":   { "text": format!("{} - 成交量", symbol), "left": "center" },
+        "title":   { "text": title, "left": "center" },
         "tooltip": { "trigger": "axis" },
         "grid":    { "left": "3%", "right": "4%", "bottom": "15%", "containLabel": true },
         "xAxis":   { "type": "category", "data": dates },

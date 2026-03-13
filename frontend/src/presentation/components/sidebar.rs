@@ -1,6 +1,5 @@
 use dioxus::prelude::*;
-use crate::application::{DataSource, TushareConfig, YahooConfig};
-use crate::infrastructure::ConfigStorage;
+use crate::application::DataSource;
 use crate::presentation::view_models::ViewMode;
 
 #[component]
@@ -9,9 +8,18 @@ pub fn Sidebar(
     on_view_change: EventHandler<ViewMode>,
     data_source: DataSource,
     on_source_change: EventHandler<DataSource>,
-    on_settings: EventHandler<()>,
 ) -> Element {
-    let mut source_open = use_signal(|| false);
+    let settings_in_scope = matches!(
+        view_mode,
+        ViewMode::ServerConfig | ViewMode::ApiKeys | ViewMode::DataSync
+    );
+    let mut settings_open = use_signal(|| settings_in_scope);
+
+    use_effect(move || {
+        if settings_in_scope {
+            settings_open.set(true);
+        }
+    });
 
     rsx! {
         aside {
@@ -36,11 +44,10 @@ pub fn Sidebar(
                 }
             }
 
-            // ── Scrollable body ───────────────────────────────────────────────
+            // ── Nav body ─────────────────────────────────────────────────────
             nav {
                 style: "padding: 1rem 0.75rem; flex: 1;",
 
-                // ── Navigation ───────────────────────────────────────────────
                 SectionLabel { title: "主功能" }
 
                 NavItem {
@@ -48,23 +55,48 @@ pub fn Sidebar(
                     label: "市场全景",
                     active: matches!(view_mode, ViewMode::Dashboard),
                     enabled: true,
+                    expand_arrow: None,
                     on_click: move |_| on_view_change.call(ViewMode::Dashboard),
                 }
 
-                // ── Settings ─────────────────────────────────────────────────
+                // ── 系统 ─────────────────────────────────────────────────────
                 div { style: "margin-top: 1.5rem;",
                     SectionLabel { title: "系统" }
+
+                    // 设置：仅展开/折叠，不导航
                     NavItem {
                         icon: "⚙",
                         label: "设置",
-                        active: matches!(view_mode, ViewMode::Settings),
+                        active: false,
                         enabled: true,
-                        on_click: move |_| on_settings.call(()),
+                        expand_arrow: Some(settings_open()),
+                        on_click: move |_| settings_open.set(!settings_open()),
+                    }
+
+                    if settings_open() {
+                        SubNavItem {
+                            icon: "🖥",
+                            label: "服务配置",
+                            active: matches!(view_mode, ViewMode::ServerConfig),
+                            on_click: move |_| on_view_change.call(ViewMode::ServerConfig),
+                        }
+                        SubNavItem {
+                            icon: "🔑",
+                            label: "API Key 存储",
+                            active: matches!(view_mode, ViewMode::ApiKeys),
+                            on_click: move |_| on_view_change.call(ViewMode::ApiKeys),
+                        }
+                        SubNavItem {
+                            icon: "🔄",
+                            label: "数据同步",
+                            active: matches!(view_mode, ViewMode::DataSync),
+                            on_click: move |_| on_view_change.call(ViewMode::DataSync),
+                        }
                     }
                 }
             }
 
-            // ── Status indicator ──────────────────────────────────────────────
+            // ── Status ───────────────────────────────────────────────────────
             div {
                 style: "padding: 1rem 1.5rem; border-top: 1px solid #1e293b; \
                        display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;",
@@ -78,7 +110,7 @@ pub fn Sidebar(
     }
 }
 
-// ── Sub-components ─────────────────────────────────────────────────────────────
+// ── Sub-components ────────────────────────────────────────────────────────────
 
 #[component]
 fn SectionLabel(title: &'static str) -> Element {
@@ -98,6 +130,7 @@ fn NavItem(
     label: &'static str,
     active: bool,
     enabled: bool,
+    expand_arrow: Option<bool>,
     on_click: EventHandler<()>,
 ) -> Element {
     let bg    = if active   { "background: #1e40af; color: #e0e7ff;" }
@@ -115,21 +148,44 @@ fn NavItem(
             disabled: !enabled,
             onclick: move |_| { if enabled { on_click.call(()); } },
             span { "{icon}" }
-            span { "{label}" }
+            span { style: "flex: 1;", "{label}" }
+            if let Some(open) = expand_arrow {
+                {
+                    let rotate = if open { "rotate(90deg)" } else { "rotate(0deg)" };
+                    rsx! {
+                        span {
+                            style: "font-size: 0.7rem; color: #475569; transition: transform 0.2s; \
+                                    display: inline-block; transform: {rotate};",
+                            "▶"
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
 #[component]
-fn SourceOption(label: &'static str, active: bool, on_click: EventHandler<()>) -> Element {
-    let bg = if active { "#334155" } else { "transparent" };
+fn SubNavItem(
+    icon: &'static str,
+    label: &'static str,
+    active: bool,
+    on_click: EventHandler<()>,
+) -> Element {
+    let bg = if active { "background: #1e3a8a; color: #bfdbfe;" }
+             else      { "background: transparent; color: #64748b;" };
+    let style = format!(
+        "width: 100%; display: flex; align-items: center; gap: 0.625rem; \
+         padding: 0.5rem 0.75rem 0.5rem 2.25rem; border-radius: 6px; border: none; \
+         text-align: left; font-size: 0.85rem; font-weight: 400; \
+         cursor: pointer; transition: background 0.2s; margin-bottom: 0.125rem; {bg}"
+    );
     rsx! {
         button {
-            style: "width: 100%; text-align: left; padding: 0.6rem 1rem; \
-                   border: none; background: {bg}; color: #cbd5e1; \
-                   cursor: pointer; font-size: 0.8125rem; transition: background 0.2s;",
+            style: "{style}",
             onclick: move |_| on_click.call(()),
-            "{label}"
+            span { style: "font-size: 0.8rem;", "{icon}" }
+            span { "{label}" }
         }
     }
 }

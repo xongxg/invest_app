@@ -2,10 +2,12 @@
 //!
 //! 对外暴露：
 //! - [`ArrowStore`]：内存 + 磁盘双层缓存，Arrow IPC File 格式
-//! - [`StockDto`]、[`OHLCDto`]、[`HealthDto`]：与前端 JSON 对齐的数据传输对象
+//! - [`HealthDto`]：健康检查响应（基础设施层）
+//!
+//! 领域实体（Stock, OHLCBar, FundNav, …）由 `stock-domain` crate 提供。
 
 mod store;
 mod types;
 
 pub use store::ArrowStore;
-pub use types::{HealthDto, OHLCDto, StockDto};
+pub use types::HealthDto;

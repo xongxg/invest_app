@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use std::rc::Rc;
 use crate::application::StockApplicationService;
-use crate::presentation::view_models::ChartType;
+use crate::presentation::view_models::{ChartType, KlinePeriod};
 use crate::presentation::charts;
 
 #[component]
@@ -9,20 +9,22 @@ pub fn ChartView(
     service: Rc<StockApplicationService>,
     stock_symbol: String,
     chart_type: ChartType,
+    kline_period: KlinePeriod,
     on_chart_type_change: EventHandler<ChartType>,
+    on_period_change: EventHandler<KlinePeriod>,
     on_back: EventHandler<()>,
 ) -> Element {
-    // 异步获取历史数据，symbol 或 chart_type 变化时自动重新请求
     let symbol = stock_symbol.clone();
     let chart_html = use_resource(move || {
-        let svc = service.clone();
-        let sym = symbol.clone();
+        let svc  = service.clone();
+        let sym  = symbol.clone();
+        let days = kline_period.fetch_days();
         async move {
-            let data = svc.get_stock_history(&sym, 60).await?;
+            let data = svc.get_stock_history(&sym, days).await?;
             let html = match chart_type {
-                ChartType::Candlestick => charts::render_candlestick(&sym, &data),
-                ChartType::Line        => charts::render_line(&sym, &data),
-                ChartType::Volume      => charts::render_volume(&sym, &data),
+                ChartType::Candlestick => charts::render_candlestick(&sym, &data, kline_period),
+                ChartType::Line        => charts::render_line(&sym, &data, kline_period),
+                ChartType::Volume      => charts::render_volume(&sym, &data, kline_period),
             };
             Ok::<String, crate::domain::errors::DomainError>(html)
         }
@@ -32,9 +34,9 @@ pub fn ChartView(
         div {
             style: "background: white; border-radius: 16px; padding: 2rem; box-shadow: 0 4px 20px rgba(0,0,0,0.1);",
 
-            // 头部
+            // ── 头部 ──────────────────────────────────────────────────────────
             div {
-                style: "display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;",
+                style: "display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;",
                 div {
                     style: "display: flex; align-items: center; gap: 1rem;",
                     button {
@@ -46,18 +48,30 @@ pub fn ChartView(
                     h2 { style: "margin: 0; font-size: 1.75rem; font-weight: 700; color: #2d3748;",
                          "{stock_symbol} - 图表分析" }
                 }
+                // 图表类型切换
                 div {
                     style: "display: flex; gap: 0.5rem;",
                     ChartTypeButton { chart_type: ChartType::Candlestick, current_type: chart_type, color: "#3b82f6",
                         on_click: move |_| on_chart_type_change.call(ChartType::Candlestick) }
-                    ChartTypeButton { chart_type: ChartType::Line,        current_type: chart_type, color: "#10b981",
+                    ChartTypeButton { chart_type: ChartType::Line, current_type: chart_type, color: "#10b981",
                         on_click: move |_| on_chart_type_change.call(ChartType::Line) }
-                    ChartTypeButton { chart_type: ChartType::Volume,      current_type: chart_type, color: "#f59e0b",
+                    ChartTypeButton { chart_type: ChartType::Volume, current_type: chart_type, color: "#f59e0b",
                         on_click: move |_| on_chart_type_change.call(ChartType::Volume) }
                 }
             }
 
-            // 图表区域
+            // ── 周期选择器（仅 K 线和趋势图显示）────────────────────────────
+            if matches!(chart_type, ChartType::Candlestick | ChartType::Line) {
+                div {
+                    style: "display: flex; gap: 0.375rem; margin-bottom: 1.25rem;",
+                    PeriodButton { period: KlinePeriod::Daily,     current: kline_period, on_click: move |_| on_period_change.call(KlinePeriod::Daily) }
+                    PeriodButton { period: KlinePeriod::Monthly,   current: kline_period, on_click: move |_| on_period_change.call(KlinePeriod::Monthly) }
+                    PeriodButton { period: KlinePeriod::Quarterly, current: kline_period, on_click: move |_| on_period_change.call(KlinePeriod::Quarterly) }
+                    PeriodButton { period: KlinePeriod::Yearly,    current: kline_period, on_click: move |_| on_period_change.call(KlinePeriod::Yearly) }
+                }
+            }
+
+            // ── 图表区域 ──────────────────────────────────────────────────────
             match &*chart_html.read() {
                 None => rsx! {
                     div {
@@ -83,15 +97,15 @@ pub fn ChartView(
                 },
             }
 
-            // 说明
+            // ── 说明 ──────────────────────────────────────────────────────────
             div {
                 style: "margin-top: 2rem; background: #f7fafc; border-radius: 12px; padding: 1.5rem;",
                 h3 { style: "margin: 0 0 1rem 0; color: #2d3748; font-size: 1.1rem; font-weight: 600;",
                      "图表功能说明" }
                 ul {
                     style: "margin: 0; padding-left: 1.5rem; color: #4a5568; line-height: 1.8;",
-                    li { strong { "日K线：" } "显示每日开盘、收盘、最高、最低价格及成交量" }
-                    li { strong { "趋势图：" } "价格线 + MA5 / MA10 / MA20 移动平均线" }
+                    li { strong { "K线：" } "支持日K / 月K / 季K / 年K 切换，显示开盘、收盘、最高、最低价格" }
+                    li { strong { "趋势图：" } "价格线 + MA5 / MA10 / MA20 移动平均线，支持周期切换" }
                     li { strong { "成交量：" } "每日成交量柱状图" }
                     li { strong { "交互：" }   "支持缩放、拖拽查看任意时间段" }
                 }
@@ -99,6 +113,8 @@ pub fn ChartView(
         }
     }
 }
+
+// ── 子组件 ────────────────────────────────────────────────────────────────────
 
 #[component]
 fn ChartTypeButton(
@@ -118,5 +134,24 @@ fn ChartTypeButton(
     };
     rsx! {
         button { onclick: move |_| on_click.call(()), style: "{style}", "{chart_type}" }
+    }
+}
+
+#[component]
+fn PeriodButton(
+    period: KlinePeriod,
+    current: KlinePeriod,
+    on_click: EventHandler<()>,
+) -> Element {
+    let is_active = period == current;
+    let style = if is_active {
+        "padding: 0.35rem 0.9rem; border: none; border-radius: 6px; font-weight: 600; \
+         cursor: pointer; font-size: 0.875rem; background: #1e40af; color: white;"
+    } else {
+        "padding: 0.35rem 0.9rem; border: 1px solid #cbd5e1; border-radius: 6px; font-weight: 500; \
+         cursor: pointer; font-size: 0.875rem; background: white; color: #475569;"
+    };
+    rsx! {
+        button { onclick: move |_| on_click.call(()), style: "{style}", "{period.label()}" }
     }
 }

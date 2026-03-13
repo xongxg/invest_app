@@ -6,8 +6,8 @@ use gloo_timers::future::sleep;
 
 use crate::application::DataSource;
 use crate::infrastructure::{ConfigStorage, RepositoryFactory};
-use crate::presentation::components::{ChartView, Dashboard, Settings, Sidebar};
-use crate::presentation::view_models::{ChartType, ViewMode};
+use crate::presentation::components::{ApiKeys, ChartView, Dashboard, DataSync, Settings, Sidebar};
+use crate::presentation::view_models::{ChartType, KlinePeriod, ViewMode};
 use crate::domain::errors::DomainError;
 use crate::domain::entities::Stock;
 
@@ -17,6 +17,7 @@ pub fn App() -> Element {
     let mut view_mode      = use_signal(|| ViewMode::Dashboard);
     let mut selected_stock = use_signal(|| None::<String>);
     let mut chart_type     = use_signal(|| ChartType::Candlestick);
+    let mut kline_period   = use_signal(|| KlinePeriod::Daily);
     let mut data_source    = use_signal(ConfigStorage::load_data_source);
     let mut refresh        = use_signal(|| 0_u32);
 
@@ -68,7 +69,6 @@ pub fn App() -> Element {
                     view_mode.set(ViewMode::Dashboard);
                     selected_stock.set(None);
                 },
-                on_settings: move |_| view_mode.set(ViewMode::Settings),
             }
 
             // ── 右侧内容区 ─────────────────────────────────────────────────────
@@ -98,10 +98,26 @@ pub fn App() -> Element {
                                     "图表分析"
                                 }
                             },
-                            ViewMode::Settings => rsx! {
+                            ViewMode::ServerConfig => rsx! {
                                 div {
                                     style: "font-size: 1.5rem; font-weight: 700; color: #1e293b;",
-                                    "设置"
+                                    "服务配置"
+                                }
+                            },
+                            ViewMode::DataSync => rsx! {
+                                div {
+                                    style: "font-size: 1.5rem; font-weight: 700; color: #1e293b; line-height: 1.2;",
+                                    "数据同步"
+                                }
+                                div {
+                                    style: "font-size: 0.8rem; color: #94a3b8; margin-top: 0.2rem;",
+                                    "批量拉取并缓存历史数据"
+                                }
+                            },
+                            ViewMode::ApiKeys => rsx! {
+                                div {
+                                    style: "font-size: 1.5rem; font-weight: 700; color: #1e293b;",
+                                    "API Key 存储"
                                 }
                             },
                         }
@@ -132,14 +148,20 @@ pub fn App() -> Element {
                                 service:              service(),
                                 stock_symbol:         selected_stock().unwrap_or_default(),
                                 chart_type:           chart_type(),
+                                kline_period:         kline_period(),
                                 on_chart_type_change: move |t: ChartType| chart_type.set(t),
+                                on_period_change:     move |p: KlinePeriod| kline_period.set(p),
                                 on_back:              move |_| view_mode.set(ViewMode::Dashboard),
                             }
                         },
-                        ViewMode::Settings => rsx! {
-                            Settings {
-                                on_back: move |_| view_mode.set(ViewMode::Dashboard),
-                            }
+                        ViewMode::ServerConfig => rsx! {
+                            Settings {}
+                        },
+                        ViewMode::DataSync => rsx! {
+                            DataSync {}
+                        },
+                        ViewMode::ApiKeys => rsx! {
+                            ApiKeys {}
                         },
                     }
                 }
